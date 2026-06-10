@@ -1,3 +1,5 @@
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import engine, Base
@@ -11,10 +13,10 @@ app = FastAPI(title="Хвост на время API")
 # --- НАСТРОЙКА CORS ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000"], # Разрешаем запросы с этих адресов
+    allow_origins=[ os.getenv("FRONTEND_URL") ],  # ваш фронтенд
     allow_credentials=True,
-    allow_methods=["*"], # Разрешаем все методы (GET, POST, etc.)
-    allow_headers=["*"], # Разрешаем все заголовки
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Подключаем роутеры
