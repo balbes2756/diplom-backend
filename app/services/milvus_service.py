@@ -1,10 +1,21 @@
 from pymilvus import MilvusClient, DataType
 from typing import List, Dict
+import os
 
 class MilvusService:
     def __init__(self):
-        self.client = MilvusClient(uri="./milvus_data.db")
-        print("✅ Подключено к Milvus Lite")
+        # ✅ Читаем URI и токен из переменных окружения
+        uri = os.getenv("MILVUS_URI", "./milvus_data.db")
+        token = os.getenv("MILVUS_TOKEN", "")
+        
+        if token:
+            # ☁️ Подключение к Zilliz Cloud (production)
+            self.client = MilvusClient(uri=uri, token=token)
+            print(f"✅ Подключено к Zilliz Cloud: {uri}")
+        else:
+            # 💻 Локальный Milvus Lite (разработка)
+            self.client = MilvusClient(uri=uri)
+            print("✅ Подключено к Milvus Lite (локально)")
         
         self.collection_name = "pet_embeddings"
         self._create_collection()
@@ -22,21 +33,34 @@ class MilvusService:
         schema.add_field("pet_type", DataType.VARCHAR, max_length=20)
         schema.add_field("embedding", DataType.FLOAT_VECTOR, dim=512)
 
-        # Индекс HNSW для быстрого поиска
+        # ✅ Индекс: AUTOINDEX для облака, HNSW для локальной версии
         index_params = self.client.prepare_index_params()
-        index_params.add_index(
-            field_name="embedding",
-            metric_type="COSINE",
-            index_type="HNSW",
-            params={"M": 16, "efConstruction": 200}
-        )
+        
+        if os.getenv("MILVUS_TOKEN"):
+            # Zilliz Cloud — используем AUTOINDEX (оптимален для облака)
+            index_params.add_index(
+                field_name="embedding",
+                metric_type="COSINE",
+                index_type="AUTOINDEX",
+                params={}
+            )
+            print("📊 Используется индекс AUTOINDEX (Zilliz Cloud)")
+        else:
+            # Локально — HNSW для быстрого поиска
+            index_params.add_index(
+                field_name="embedding",
+                metric_type="COSINE",
+                index_type="HNSW",
+                params={"M": 16, "efConstruction": 200}
+            )
+            print(" Используется индекс HNSW (локально)")
 
         self.client.create_collection(
             collection_name=self.collection_name,
             schema=schema,
             index_params=index_params
         )
-        print(f"✅ Коллекция '{self.collection_name}' создана с индексом HNSW")
+        print(f"✅ Коллекция '{self.collection_name}' создана")
 
     def insert_embedding(self, pet_id: int, embedding: List[float], status: str, pet_type: str):
         """Добавляет эмбеддинг в базу"""
@@ -67,15 +91,15 @@ class MilvusService:
             collection_name=self.collection_name,
             data=[query_embedding],
             limit=limit,
-            filter=filter_expr,  # ← Фильтр по статусу И типу
+            filter=filter_expr,
             output_fields=["pet_id", "status", "pet_type"],
-            search_params={"metric_type": "COSINE", "params": {"ef": 64}}
+            search_params={"metric_type": "COSINE"}
         )
 
         matches = []
         for hits in results:
             for hit in hits:
-                # ✅ УЖЕСТЧАЕМ ПОРОГ: distance < 0.20 (similarity > 0.80)
+                # ✅ Строгий порог: distance < 0.10 (similarity > 0.90)
                 if hit['distance'] < 0.10:
                     similarity = 1 - hit['distance']
                     matches.append({
