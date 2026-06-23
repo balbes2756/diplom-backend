@@ -7,6 +7,9 @@ class MilvusService:
         # ✅ Читаем URI и токен из переменных окружения
         uri = os.getenv("MILVUS_URI", "./milvus_data.db")
         token = os.getenv("MILVUS_TOKEN", "")
+
+        print(f"🔍 DEBUG: MILVUS_URI = {uri}")
+        print(f"🔍 DEBUG: MILVUS_TOKEN = {'[установлен]' if token else '[НЕ УСТАНОВЛЕН]'}")
         
         if token:
             # ☁️ Подключение к Zilliz Cloud (production)
