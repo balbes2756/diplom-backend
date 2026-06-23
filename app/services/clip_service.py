@@ -7,7 +7,7 @@ class CLIPService:
     def __init__(self):
         print("⏳ Загрузка CLIP модели через sentence-transformers...")
         # Используем CLIP через sentence-transformers (проще и надёжнее)
-        self.model = SentenceTransformer("clip-ViT-B-32")
+        self.model = SentenceTransformer('all-MiniLM-L6-v2')
         print("✅ CLIP модель загружена")
 
     def get_text_embedding(self, text: str) -> List[float]:
