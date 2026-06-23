@@ -1,5 +1,12 @@
 FROM python:3.13-slim
 
+# ✅ Устанавливаем системные зависимости для Pillow
+RUN apt-get update && apt-get install -y \
+    libjpeg-dev \
+    zlib1g-dev \
+    libpng-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY requirements.txt .
@@ -8,5 +15,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# ✅ Shell-форма CMD позволяет раскрыть переменную $PORT
-# CMD uvicorn app.main:app --host 0.0.0.0 --port $PORT
+# CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
