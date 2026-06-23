@@ -1,6 +1,9 @@
 from pymilvus import MilvusClient, DataType
 from typing import List, Dict
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class MilvusService:
     def __init__(self):
