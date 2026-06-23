@@ -1,6 +1,6 @@
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 
 # === Пользователи ===

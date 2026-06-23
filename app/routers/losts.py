@@ -1,9 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, List
 from .. import models, schemas, database
-from .auth import get_current_user
+from .auth import get_current_user_optional
 from ..services.storage import storage_service
+from ..services.clip_service import clip_service
+from ..services.milvus_service import milvus_service
+import requests
 
 router = APIRouter(prefix="/losts", tags=["Объявления"])
 
@@ -11,14 +14,15 @@ router = APIRouter(prefix="/losts", tags=["Объявления"])
 def create_announcement(
     data: schemas.PetForm,
     db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(get_current_user),  # ← Обязательная авторизация
+    current_user: models.User = Depends(get_current_user_optional),
 ):
     """
-    Создание объявления о пропаже/находке.
+    Создание объявления о пропаже/находке с ИИ-поиском совпадений.
     Только для авторизованных пользователей.
     """
+    # 1. Создаём объявление в PostgreSQL
     new_ann = models.Pet(
-        user_id=current_user.id,  # ← Всегда заполнен
+        user_id=current_user.id if current_user else None,
         name=data.name,
         type=data.type,
         status=data.status,
@@ -35,8 +39,99 @@ def create_announcement(
     db.commit()
     db.refresh(new_ann)
     
-    print(f"✅ Объявление создано: ID={new_ann.id}, user_id={current_user.id}")
-    return new_ann
+    print(f"✅ Объявление создано: ID={new_ann.id}, user_id={current_user.id if current_user else 'аноним'}")
+
+    # 2. Генерируем эмбеддинг через CLIP
+    text = f"{new_ann.name} {new_ann.type} {new_ann.description}"
+    image_bytes = None
+    
+    # Скачиваем изображение, если есть URL
+    if new_ann.image:
+        print(f"🖼️ Пытаемся скачать изображение: {new_ann.image}")
+        try:
+            response = requests.get(new_ann.image, timeout=5)
+            if response.status_code == 200:
+                image_bytes = response.content
+                print(f"✅ Изображение скачано: {len(image_bytes)} байт")
+            else:
+                print(f"⚠️ Ошибка скачивания: статус {response.status_code}")
+        except Exception as e:
+            print(f"⚠️ Не удалось скачать изображение: {e}")
+
+    # Генерируем комбинированный эмбеддинг
+    embedding = clip_service.get_combined_embedding(text, image_bytes)
+    print(f"✅ Эмбеддинг сгенерирован, размерность: {len(embedding)}")
+
+    # 3. Сохраняем эмбеддинг в Milvus
+    milvus_service.insert_embedding(
+        pet_id=new_ann.id,
+        embedding=embedding,
+        status=new_ann.status,
+        pet_type=new_ann.type
+    )
+    print(f"✅ Эмбеддинг сохранён в Milvus для pet_id={new_ann.id}")
+
+    # 4. Если статус "found" — ищем совпадения среди "lost"
+    matched_pets = []
+    if new_ann.status == "found":
+        matches = milvus_service.search_similar(
+            query_embedding=embedding,
+            status="lost",
+            pet_type=new_ann.type,
+            limit=5
+        )
+        
+        # Получаем полные данные из PostgreSQL
+        if matches:
+            matched_ids = [m["pet_id"] for m in matches]
+            matched_pets = db.query(models.Pet).filter(
+                models.Pet.id.in_(matched_ids)
+            ).all()
+            print(f"✅ Найдено {len(matched_pets)} совпадений (БЕЗ ФИЛЬТРА)")
+            for match in matches:
+                pet = db.query(models.Pet).filter(models.Pet.id == match["pet_id"]).first()
+                if pet:
+                    name = pet.name if pet.name else "Без имени"
+                    print(f"   - {name} ({pet.type}, {pet.status}): сходство {match['similarity']:.3f}")
+        else:
+            print("Совпадений не найдено")
+
+    # 5. Возвращаем результат
+    return {
+        "id": new_ann.id,
+        "user_id": new_ann.user_id,
+        "name": new_ann.name,
+        "type": new_ann.type,
+        "status": new_ann.status,
+        "description": new_ann.description,
+        "date": new_ann.date,
+        "city": new_ann.city,
+        "lat": new_ann.lat,
+        "long": new_ann.long,
+        "image": new_ann.image,
+        "contact_phone": new_ann.contact_phone,
+        "created_at": str(new_ann.created_at),
+        "is_active": new_ann.is_active,
+        "matched_pets": [
+            {
+                "id": pet.id,
+                "user_id": pet.user_id,
+                "name": pet.name,
+                "type": pet.type,
+                "status": pet.status,
+                "description": pet.description,
+                "date": pet.date,
+                "city": pet.city,
+                "lat": pet.lat,
+                "long": pet.long,
+                "image": pet.image,
+                "contact_phone": pet.contact_phone,
+                "created_at": str(pet.created_at),
+                "is_active": pet.is_active,
+            }
+            for pet in matched_pets
+        ]
+    }
 
 @router.get("/")
 def get_announcements(
@@ -58,61 +153,3 @@ def get_announcements(
         query = query.filter(models.Pet.type == type)
     
     return query.order_by(models.Pet.created_at.desc()).all()
-
-@router.get("/{announcement_id}")
-def get_announcement(
-    announcement_id: int,
-    db: Session = Depends(database.get_db),
-):
-    """
-    Получение одного объявления по ID.
-    """
-    announcement = db.query(models.Pet).filter(
-        models.Pet.id == announcement_id,
-        models.Pet.is_active == True
-    ).first()
-    
-    if not announcement:
-        raise HTTPException(status_code=404, detail="Объявление не найдено")
-    
-    return announcement
-
-@router.delete("/{announcement_id}")
-def delete_announcement(
-    announcement_id: int,
-    db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    """
-    Полное удаление объявления из БД и изображения из Bucket.ru.
-    """
-    # 1. Ищем объявление (без фильтра is_active — удаляем даже скрытые)
-    announcement = db.query(models.Pet).filter(
-        models.Pet.id == announcement_id
-    ).first()
-
-    if not announcement:
-        raise HTTPException(status_code=404, detail="Объявление не найдено")
-
-    # 2. Проверка авторства
-    if announcement.user_id != current_user.id:
-        raise HTTPException(
-            status_code=403,
-            detail="Вы не можете удалить чужое объявление"
-        )
-
-    # 3. Удаляем изображение из Bucket.ru (если есть)
-    if announcement.image:
-        print(f"️ Удаляем изображение: {announcement.image}")
-        try:
-            storage_service.delete_image(announcement.image)
-            print("✅ Файл удалён из хранилища")
-        except Exception as e:
-            print(f"⚠️ Не удалось удалить файл: {e}")
-
-    # 4. Полное удаление из БД
-    db.delete(announcement)
-    db.commit()
-
-    print(f"✅ Объявление #{announcement_id} полностью удалено")
-    return {"message": "Объявление удалено"}
